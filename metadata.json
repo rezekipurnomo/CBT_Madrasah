@@ -1,0 +1,6 @@
+{
+  "name": "CBT Madrasah",
+  "description": "Sistem Computer Based Test (CBT) Madrasah modern, responsif, aman, dan siap pakai untuk MI, MTs, dan MA dalam jaringan LAN/WiFi lokal maupun online.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
