@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useCBT } from '../context/CBTContext';
 import { Question, StudentAnswer } from '../types';
+import { offlineSyncManager } from '../utils/offlineSyncManager';
+import { QRCodeDisplay } from './QRCodeDisplay';
 import confetti from 'canvas-confetti';
 import {
   Clock,
@@ -21,7 +23,13 @@ import {
   WifiOff,
   Grid,
   X,
-  Smartphone
+  Smartphone,
+  RefreshCw,
+  Download,
+  ShieldCheck,
+  HardDrive,
+  Database,
+  QrCode
 } from 'lucide-react';
 
 interface ExamRunnerProps {
@@ -40,6 +48,8 @@ export const ExamRunner: React.FC<ExamRunnerProps> = ({ examId, token, onExit })
     saveStudentAnswer,
     toggleFlagAnswer,
     finishExamSession,
+    syncOfflineQueue,
+    exportEmergencySessionBackup,
     showToast
   } = useCBT();
 
@@ -75,6 +85,7 @@ export const ExamRunner: React.FC<ExamRunnerProps> = ({ examId, token, onExit })
   useEffect(() => {
     localStorage.setItem(`CBT_MADRASAH_CURR_Q_INDEX_${sessionId}`, currentIndex.toString());
   }, [currentIndex, sessionId]);
+
   const [fontSize, setFontSize] = useState<'normal' | 'large' | 'xlarge'>('normal');
   const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
   const [confirmChecked, setConfirmChecked] = useState<boolean>(false);
@@ -87,11 +98,47 @@ export const ExamRunner: React.FC<ExamRunnerProps> = ({ examId, token, onExit })
   // Local countdown
   const [timeLeft, setTimeLeft] = useState<number>(session?.remainingSeconds || 3600);
 
-  // Online / Offline listener
+  // Offline sync states
+  const [pendingQueueCount, setPendingQueueCount] = useState<number>(0);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [showEmergencyModal, setShowEmergencyModal] = useState<boolean>(false);
+  const [emergencyBackupData, setEmergencyBackupData] = useState<{ fileName: string; jsonData: string } | null>(null);
+
+  // Check pending offline items count
+  const checkPendingQueue = useCallback(async () => {
+    try {
+      const items = await offlineSyncManager.getPendingQueue(sessionId);
+      setPendingQueueCount(items.length);
+    } catch (e) {
+      // ignore
+    }
+  }, [sessionId]);
+
+  // Sync offline queue to server/session state
+  const handleTriggerSync = useCallback(async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    try {
+      const res = await syncOfflineQueue(sessionId);
+      if (res.syncedCount > 0) {
+        showToast(`Berhasil menyinkronkan ${res.syncedCount} jawaban ke server!`, 'success');
+        setSaveStatus('Tersinkronisasi ke Server');
+        setSaveTime(new Date().toLocaleTimeString('id-ID'));
+      }
+      await checkPendingQueue();
+    } catch (e) {
+      console.warn('Sync failed:', e);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [sessionId, isSyncing, syncOfflineQueue, showToast, checkPendingQueue]);
+
+  // Online / Offline listener and auto-sync triggers
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      showToast('Koneksi Wi-Fi ke Server Terhubung Kembali!', 'success');
+      showToast('Koneksi Wi-Fi ke Server Terhubung Kembali! Menyinkronkan jawaban...', 'success');
+      handleTriggerSync();
     };
     const handleOffline = () => {
       setIsOnline(false);
@@ -101,11 +148,44 @@ export const ExamRunner: React.FC<ExamRunnerProps> = ({ examId, token, onExit })
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
+    // Initial check
+    checkPendingQueue();
+
+    // Auto-sync interval (every 8 seconds if online and there are pending items)
+    const syncInterval = setInterval(() => {
+      checkPendingQueue();
+      if (navigator.onLine) {
+        handleTriggerSync();
+      }
+    }, 8000);
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      clearInterval(syncInterval);
     };
-  }, [showToast]);
+  }, [showToast, handleTriggerSync, checkPendingQueue]);
+
+  // Generate Emergency Backup
+  const handleOpenEmergencyModal = async () => {
+    const backup = await exportEmergencySessionBackup(sessionId);
+    setEmergencyBackupData(backup);
+    setShowEmergencyModal(true);
+  };
+
+  const handleDownloadBackupFile = () => {
+    if (!emergencyBackupData) return;
+    const blob = new Blob([emergencyBackupData.jsonData], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = emergencyBackupData.fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Berkas cadangan darurat (.cbt) berhasil diunduh!', 'success');
+  };
 
   useEffect(() => {
     if (!session || session.status === 'selesai' || session.status === 'waktu_habis') {
@@ -353,10 +433,39 @@ export const ExamRunner: React.FC<ExamRunnerProps> = ({ examId, token, onExit })
               </span>
             </div>
 
-            {/* Autosave Status */}
-            <div className="flex items-center space-x-1.5 text-[10px] sm:text-[11px] text-[#71717A] font-medium font-mono">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.7)] animate-pulse" />
-              <span>{saveStatus}</span>
+            {/* Autosave & Sync Status */}
+            <div className="flex items-center space-x-2">
+              {pendingQueueCount > 0 ? (
+                <button
+                  onClick={handleTriggerSync}
+                  disabled={isSyncing}
+                  className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/40 text-[10px] sm:text-[11px] font-bold transition-all hover:bg-amber-500/30"
+                  title="Klik untuk sinkronkan jawaban ke server sekarang"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
+                  <span>{pendingQueueCount} di HP (Sinkronkan)</span>
+                </button>
+              ) : isOnline ? (
+                <div className="flex items-center space-x-1.5 text-[10px] sm:text-[11px] text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded-lg font-medium font-mono">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.7)]" />
+                  <span>Tersinkron di Server</span>
+                </div>
+              ) : (
+                <div className="flex items-center space-x-1.5 text-[10px] sm:text-[11px] text-rose-400 bg-rose-950/40 border border-rose-800/40 px-2 py-0.5 rounded-lg font-medium font-mono">
+                  <WifiOff className="w-3 h-3 text-rose-400" />
+                  <span>Offline (Tersimpan Lokal)</span>
+                </div>
+              )}
+
+              {/* Emergency Backup Button */}
+              <button
+                onClick={handleOpenEmergencyModal}
+                className="p-1.5 rounded-lg bg-[#1C1C1F] hover:bg-[#252529] text-[#A1A1AA] hover:text-white border border-[#2D2D31] text-[10px] font-bold flex items-center space-x-1"
+                title="Cadangan Jawaban Darurat untuk Pengawas/Proktor"
+              >
+                <Download className="w-3 h-3 text-emerald-400" />
+                <span className="hidden sm:inline">Backup Darurat</span>
+              </button>
             </div>
           </div>
 
@@ -890,6 +999,97 @@ export const ExamRunner: React.FC<ExamRunnerProps> = ({ examId, token, onExit })
                 }`}
               >
                 Ya, Kumpulkan Jawaban
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Emergency Answer Backup Modal */}
+      {showEmergencyModal && emergencyBackupData && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-[#161618] rounded-2xl shadow-2xl max-w-lg w-full p-5 sm:p-6 border border-[#2D2D31] animate-in fade-in zoom-in-95 duration-150 text-[#D1D1D1]">
+            <div className="flex items-center justify-between pb-3 border-b border-[#222224] mb-4">
+              <div className="flex items-center space-x-3 text-emerald-400">
+                <div className="w-10 h-10 rounded-xl bg-[#1C1C1F] border border-emerald-500/30 flex items-center justify-center">
+                  <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white">Cadangan Jawaban Darurat Siswa</h3>
+                  <p className="text-xs text-[#71717A]">Protokol Pemulihan Offline CBT Madrasah</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowEmergencyModal(false)}
+                className="p-1.5 rounded-xl bg-[#1C1C1F] text-[#A1A1AA] hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5">
+              <div className="p-3 bg-[#121214] border border-[#222224] rounded-xl text-xs space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-[#71717A]">Nama Siswa:</span>
+                  <span className="font-semibold text-white">{session.studentName}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#71717A]">NISN / ID:</span>
+                  <span className="font-mono text-emerald-400 font-semibold">{session.nisn}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#71717A]">Total Jawaban Tersimpan:</span>
+                  <span className="font-bold text-white">{answeredCount} dari {session.totalQuestions} Soal</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#71717A]">Status Sinkronisasi:</span>
+                  <span className={pendingQueueCount === 0 ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
+                    {pendingQueueCount === 0 ? 'Tersinkron Penuh' : `${pendingQueueCount} Jawaban Tersimpan Lokal di HP`}
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-3 bg-emerald-950/30 border border-emerald-800/40 rounded-xl text-xs text-emerald-300 space-y-1">
+                <div className="font-bold flex items-center gap-1.5 text-emerald-400">
+                  <Database className="w-4 h-4" />
+                  <span>Petunjuk untuk Peserta & Proktor:</span>
+                </div>
+                <p className="leading-relaxed">
+                  Jika jaringan Wi-Fi lab terputus lama atau perangkat HP mengalami kendala baterai, unduh berkas cadangan ini (<strong>.cbt</strong>) atau perlihatkan kepada Pengawas/Proktor untuk diimpor ke Server Utama.
+                </p>
+              </div>
+
+              {/* QR Code section for instant optical verification */}
+              <div className="bg-[#121214] border border-[#222224] rounded-xl p-3 flex flex-col items-center justify-center">
+                <div className="text-[11px] font-semibold text-[#A1A1AA] mb-2 flex items-center gap-1">
+                  <QrCode className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Kode Verifikasi Sesi & Checksum Pengawas</span>
+                </div>
+                <div className="p-2 bg-white rounded-xl">
+                  <QRCodeDisplay
+                    url={`CBT-MADRASAH:${session.studentId}:${examId}:${answeredCount}:${session.nisn}`}
+                    size={130}
+                  />
+                </div>
+                <div className="text-[10px] text-[#71717A] mt-2 font-mono truncate max-w-full">
+                  HASH: {session.id.substring(0, 24)}...
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end space-x-2.5 mt-5 pt-3 border-t border-[#222224]">
+              <button
+                onClick={() => setShowEmergencyModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-[#A1A1AA] hover:bg-[#1C1C1F] rounded-xl transition-colors"
+              >
+                Tutup
+              </button>
+              <button
+                onClick={handleDownloadBackupFile}
+                className="flex items-center space-x-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-md transition-all active:scale-95"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Unduh Berkas Jawaban (.cbt)</span>
               </button>
             </div>
           </div>

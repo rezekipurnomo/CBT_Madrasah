@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useCBT } from '../context/CBTContext';
 import { Exam } from '../types';
 import { ExamRunner } from './ExamRunner';
@@ -12,7 +12,15 @@ import {
   Sparkles,
   Info,
   Smartphone,
-  QrCode
+  TrendingUp,
+  BarChart3,
+  Target,
+  Clock,
+  BookOpen,
+  GraduationCap,
+  Layers,
+  ChevronRight,
+  AlertCircle
 } from 'lucide-react';
 
 interface StudentDashboardProps {
@@ -99,7 +107,39 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onStartExam 
     );
   }
 
-  const studentResults = (examResults || []).filter(r => r.studentId === currentStudent?.id);
+  const studentResults = useMemo(() => {
+    return (examResults || []).filter(r => r.studentId === currentStudent?.id);
+  }, [examResults, currentStudent?.id]);
+
+  // Compute performance metrics
+  const completedCount = studentResults.length;
+  const averageGrade = useMemo(() => {
+    if (completedCount === 0) return 0;
+    const sum = studentResults.reduce((acc, r) => acc + (r.nilaiAkhir || 0), 0);
+    return Math.round((sum / completedCount) * 10) / 10;
+  }, [studentResults, completedCount]);
+
+  const passedCount = useMemo(() => {
+    return studentResults.filter(r => r.statusLulus === 'LULUS' || (r.nilaiAkhir || 0) >= (r.kkm || 75)).length;
+  }, [studentResults]);
+
+  const passRate = completedCount > 0 ? Math.round((passedCount / completedCount) * 100) : 0;
+  const totalExamsCount = availableExams.length;
+  const completionProgress = totalExamsCount > 0 ? Math.round((completedCount / totalExamsCount) * 100) : 0;
+
+  const upcomingExams = useMemo(() => {
+    return availableExams.filter(exam => !studentResults.some(r => r.examId === exam.id));
+  }, [availableExams, studentResults]);
+
+  // Predikat Nilai helper
+  const getGradePredikat = (score: number) => {
+    if (score >= 88) return { label: 'A (Sangat Baik)', color: 'text-emerald-400', bg: 'bg-emerald-950/60 border-emerald-800/50' };
+    if (score >= 75) return { label: 'B (Baik / Tuntas)', color: 'text-blue-400', bg: 'bg-blue-950/60 border-blue-800/50' };
+    if (score >= 60) return { label: 'C (Cukup)', color: 'text-amber-400', bg: 'bg-amber-950/60 border-amber-800/50' };
+    return { label: 'D (Perlu Bimbingan)', color: 'text-rose-400', bg: 'bg-rose-950/60 border-rose-800/50' };
+  };
+
+  const predikat = getGradePredikat(averageGrade);
 
   return (
     <div className="space-y-6">
@@ -115,10 +155,10 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onStartExam 
               Ahlan Wa Sahlan, {currentStudent?.nama}!
             </h1>
             <p className="text-xs sm:text-sm text-[#A1A1AA] max-w-xl leading-relaxed">
-              Selamat datang di sistem CBT {madrasah.namaMadrasah}. Pastikan koneksi Wi-Fi/LAN lokal Anda terhubung ke server CBT sebelum memulai ujian.
+              Selamat datang di sistem CBT {madrasah.namaMadrasah}. Pantau rekap capaian belajar, progres ujian terjadwal, dan riwayat nilai asesmen Anda secara transparan.
             </p>
 
-            <div className="pt-1">
+            <div className="pt-1 flex flex-wrap items-center gap-2.5">
               <button
                 type="button"
                 onClick={() => setShowMobileGuide(true)}
@@ -152,15 +192,292 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onStartExam 
         </div>
       </div>
 
-      {/* Available Exams Section */}
+      {/* Visual Performance Summary Matrix */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Card 1: Rata-Rata Nilai */}
+        <div className="bg-[#161618] rounded-2xl p-5 border border-[#222224] shadow-sm flex flex-col justify-between space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-[#71717A]">Rata-Rata Nilai</span>
+            <div className="w-8 h-8 rounded-xl bg-[#1C1C1F] border border-emerald-500/30 flex items-center justify-center">
+              <Award className="w-4 h-4 text-emerald-400" />
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-3xl font-extrabold font-mono text-white">
+                {completedCount > 0 ? averageGrade : '—'}
+              </span>
+              <span className="text-xs text-[#71717A] font-mono">/ 100</span>
+            </div>
+
+            {/* Score progress bar */}
+            <div className="mt-2.5 space-y-1">
+              <div className="w-full bg-[#1C1C1F] h-2 rounded-full overflow-hidden relative">
+                <div
+                  className="h-full bg-linear-to-r from-emerald-600 to-emerald-400 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(100, averageGrade)}%` }}
+                />
+                {/* KKM 75 Benchmark Marker */}
+                <div
+                  className="absolute top-0 bottom-0 w-0.5 bg-amber-400 z-10"
+                  style={{ left: '75%' }}
+                  title="Batas KKM (75)"
+                />
+              </div>
+              <div className="flex justify-between text-[10px] text-[#71717A]">
+                <span>0</span>
+                <span className="text-amber-400 font-mono">KKM 75</span>
+                <span>100</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-[#222224] flex items-center justify-between">
+            <span className="text-[11px] text-[#71717A]">Predikat:</span>
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md border ${predikat.bg} ${predikat.color}`}>
+              {completedCount > 0 ? predikat.label : 'Belum Ada Data'}
+            </span>
+          </div>
+        </div>
+
+        {/* Card 2: Tingkat Kelulusan */}
+        <div className="bg-[#161618] rounded-2xl p-5 border border-[#222224] shadow-sm flex flex-col justify-between space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-[#71717A]">Tingkat Kelulusan</span>
+            <div className="w-8 h-8 rounded-xl bg-[#1C1C1F] border border-blue-500/30 flex items-center justify-center">
+              <Target className="w-4 h-4 text-blue-400" />
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-3xl font-extrabold font-mono text-blue-400">
+                {completedCount > 0 ? `${passRate}%` : '0%'}
+              </span>
+              <span className="text-xs text-[#71717A]">Tuntas KKM</span>
+            </div>
+
+            <div className="mt-2.5 space-y-1">
+              <div className="w-full bg-[#1C1C1F] h-2 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-linear-to-r from-blue-600 to-blue-400 rounded-full transition-all duration-500"
+                  style={{ width: `${passRate}%` }}
+                />
+              </div>
+              <div className="text-[10px] text-[#71717A] text-right font-mono">
+                {passedCount} dari {completedCount} Ujian Tuntas
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-[#222224] flex items-center justify-between text-[11px]">
+            <span className="text-[#71717A]">Status Asesmen:</span>
+            <span className={`font-semibold ${passRate >= 75 ? 'text-emerald-400' : 'text-amber-400'}`}>
+              {passRate >= 75 ? 'Memuaskan' : 'Perlu Peningkatan'}
+            </span>
+          </div>
+        </div>
+
+        {/* Card 3: Progres Ujian Semester */}
+        <div className="bg-[#161618] rounded-2xl p-5 border border-[#222224] shadow-sm flex flex-col justify-between space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-[#71717A]">Progres Kurikulum</span>
+            <div className="w-8 h-8 rounded-xl bg-[#1C1C1F] border border-amber-500/30 flex items-center justify-center">
+              <TrendingUp className="w-4 h-4 text-amber-400" />
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-3xl font-extrabold font-mono text-white">
+                {completedCount}
+              </span>
+              <span className="text-xs text-[#71717A] font-mono">/ {totalExamsCount} Ujian</span>
+            </div>
+
+            <div className="mt-2.5 space-y-1">
+              <div className="w-full bg-[#1C1C1F] h-2 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-linear-to-r from-amber-600 to-amber-400 rounded-full transition-all duration-500"
+                  style={{ width: `${completionProgress}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-[10px] text-[#71717A]">
+                <span>Selesai</span>
+                <span className="text-amber-400 font-mono font-bold">{completionProgress}%</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-[#222224] flex items-center justify-between text-[11px]">
+            <span className="text-[#71717A]">Sisa Ujian:</span>
+            <span className="font-bold text-white font-mono">{upcomingExams.length} Mata Pelajaran</span>
+          </div>
+        </div>
+
+        {/* Card 4: Ujian Mendatang */}
+        <div className="bg-[#161618] rounded-2xl p-5 border border-[#222224] shadow-sm flex flex-col justify-between space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-[#71717A]">Jadwal Terdekat</span>
+            <div className="w-8 h-8 rounded-xl bg-[#1C1C1F] border border-purple-500/30 flex items-center justify-center">
+              <CalendarCheck className="w-4 h-4 text-purple-400" />
+            </div>
+          </div>
+
+          <div>
+            {upcomingExams.length > 0 ? (
+              <div className="space-y-1">
+                <span className="text-base font-bold text-white line-clamp-1">
+                  {upcomingExams[0].namaUjian}
+                </span>
+                <div className="text-xs font-medium text-emerald-400">
+                  {upcomingExams[0].subjectName}
+                </div>
+                <div className="text-[11px] text-[#71717A] flex items-center gap-1 font-mono pt-1">
+                  <Clock className="w-3 h-3 text-amber-400" />
+                  <span>{upcomingExams[0].tanggalMulai} • {upcomingExams[0].durasiMenit} Menit</span>
+                </div>
+              </div>
+            ) : (
+              <div className="py-2 text-center text-xs text-[#71717A]">
+                Semua mata ujian telah selesai dikerjakan.
+              </div>
+            )}
+          </div>
+
+          <div className="pt-2 border-t border-[#222224] flex items-center justify-between text-[11px]">
+            <span className="text-[#71717A]">Status Pelaksanaan:</span>
+            <span className="font-semibold text-emerald-400">
+              {upcomingExams.some(e => e.status === 'aktif') ? 'Ujian Aktif Tersedia' : 'Menunggu Sesi'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Visual Performance History & Progress Chart */}
+      <div className="bg-[#161618] p-5 sm:p-6 rounded-2xl border border-[#222224] shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#222224]">
+          <div className="flex items-center space-x-2">
+            <BarChart3 className="w-4 h-4 text-emerald-400" />
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider">
+              Grafik Riwayat & Capaian Nilai Siswa
+            </h2>
+          </div>
+          <div className="flex items-center space-x-4 text-xs">
+            <div className="flex items-center space-x-1.5">
+              <span className="w-3 h-3 rounded bg-emerald-500" />
+              <span className="text-[#A1A1AA]">Nilai Ujian</span>
+            </div>
+            <div className="flex items-center space-x-1.5">
+              <span className="w-3 h-0.5 bg-amber-400" />
+              <span className="text-amber-400 font-mono">Batas KKM (75)</span>
+            </div>
+          </div>
+        </div>
+
+        {studentResults.length > 0 ? (
+          <div className="space-y-4">
+            {/* Progress Bars Chart View */}
+            <div className="space-y-3 pt-2">
+              {studentResults.map((r, idx) => {
+                const score = r.nilaiAkhir || 0;
+                const isPass = score >= (r.kkm || 75);
+                const percentage = Math.min(100, Math.max(5, score));
+
+                return (
+                  <div key={r.id || idx} className="p-3.5 bg-[#121214] border border-[#222224] rounded-xl hover:border-[#2D2D31] transition-all space-y-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <span className="text-xs font-bold text-white">{r.examName}</span>
+                          <span className="text-[10px] text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded font-medium">
+                            {r.subjectName}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-[#71717A] font-mono mt-0.5">
+                          Diselesaikan: {r.submittedAt} • Benar: {r.benarCount}/{r.totalSoal} Soal
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-3 self-end sm:self-center">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            isPass
+                              ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40'
+                              : 'bg-rose-950/50 text-rose-400 border border-rose-800/40'
+                          }`}
+                        >
+                          {isPass ? 'LULUS KKM' : 'REMIDI'}
+                        </span>
+                        <div className="text-right">
+                          <span className="text-lg font-extrabold font-mono text-emerald-400">
+                            {score}
+                          </span>
+                          <span className="text-[10px] text-[#71717A] font-mono block">KKM: {r.kkm || 75}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Visual Stepped / Linear Bar with KKM Marker */}
+                    <div className="relative pt-1">
+                      <div className="w-full bg-[#1C1C1F] h-3.5 rounded-lg overflow-hidden relative">
+                        <div
+                          className={`h-full rounded-lg transition-all duration-700 ${
+                            isPass
+                              ? 'bg-linear-to-r from-emerald-600 via-teal-500 to-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.3)]'
+                              : 'bg-linear-to-r from-rose-600 to-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.3)]'
+                          }`}
+                          style={{ width: `${percentage}%` }}
+                        />
+                        {/* KKM 75 Reference Line Indicator */}
+                        <div
+                          className="absolute top-0 bottom-0 w-0.5 bg-amber-400/90 z-20"
+                          style={{ left: `${r.kkm || 75}%` }}
+                          title={`Ambang Batas KKM (${r.kkm || 75})`}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Performance Analysis Note */}
+            <div className="p-3 bg-[#121214] border border-[#222224] rounded-xl flex items-start space-x-2.5 text-xs text-[#A1A1AA]">
+              <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <span className="font-semibold text-white">Catatan Evaluasi Pembelajaran Siswa:</span>
+                <p className="leading-relaxed text-[11px]">
+                  Rata-rata nilai keseluruhan Anda adalah <strong className="text-emerald-400 font-mono">{averageGrade}</strong> dengan predikat <strong className="text-white">{predikat.label}</strong>. Pertahankan konsistensi belajar Anda pada mata ujian berikutnya.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-8 text-center bg-[#121214] border border-[#222224] rounded-xl space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-[#1C1C1F] border border-[#2D2D31] flex items-center justify-center mx-auto text-[#71717A]">
+              <BarChart3 className="w-6 h-6 text-[#71717A]" />
+            </div>
+            <div className="space-y-1">
+              <h4 className="font-bold text-white text-sm">Belum Ada Riwayat Ujian</h4>
+              <p className="text-xs text-[#71717A] max-w-md mx-auto">
+                Grafik performa dan rekap nilai otomatis terisi setelah Anda menyelesaikan ujian pada daftar jadwal di bawah.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Available & Upcoming Exams Section */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <CalendarCheck className="w-4 h-4 text-emerald-400" />
-            <h2 className="text-sm font-bold text-white uppercase tracking-wider">Jadwal Ujian Tersedia</h2>
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider">Jadwal Ujian Tersedia & Mendatang</h2>
           </div>
           <span className="text-xs font-mono text-[#71717A]">
-            {availableExams.length} Mata Ujian Terjadwal
+            {availableExams.length} Mata Ujian Terdaftar
           </span>
         </div>
 
@@ -193,7 +510,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onStartExam 
                       </span>
                     ) : (
                       <span className="px-2.5 py-0.5 rounded text-[10px] font-semibold bg-[#1C1C1F] text-[#71717A] border border-[#2D2D31] capitalize">
-                        {exam.status}
+                        {exam.status === 'draft' ? 'Akan Datang (Terjadwal)' : exam.status}
                       </span>
                     )}
                   </div>
@@ -207,14 +524,14 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onStartExam 
 
                   <div className="grid grid-cols-2 gap-2 mt-3 p-3 bg-[#121214] border border-[#222224] rounded-xl text-xs text-[#A1A1AA]">
                     <div>
-                      <span className="text-[10px] text-[#71717A] block">Jadwal</span>
+                      <span className="text-[10px] text-[#71717A] block">Jadwal Pelaksanaan</span>
                       <span className="font-semibold text-[#E5E5E7]">
                         {exam.tanggalMulai} ({exam.jamMulai} - {exam.jamSelesai})
                       </span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-[#71717A] block">Alokasi Waktu</span>
-                      <span className="font-semibold text-[#E5E5E7]">{exam.durasiMenit} Menit</span>
+                      <span className="text-[10px] text-[#71717A] block">Alokasi Waktu & Soal</span>
+                      <span className="font-semibold text-[#E5E5E7]">{exam.durasiMenit} Menit ({exam.jumlahSoal || 0} Soal)</span>
                     </div>
                   </div>
                 </div>
@@ -245,16 +562,16 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onStartExam 
         </div>
       </div>
 
-      {/* Exam Results & History */}
+      {/* Detailed Exam Results Table */}
       {studentResults.length > 0 && (
         <div className="bg-[#161618] p-5 sm:p-6 rounded-2xl border border-[#222224] shadow-sm space-y-4">
           <div className="flex items-center space-x-2 pb-3 border-b border-[#222224]">
             <Award className="w-4 h-4 text-amber-400" />
-            <h2 className="text-sm font-bold text-white uppercase tracking-wider">Riwayat & Nilai Ujian Saya</h2>
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider">Tabel Rincian Lembar Jawaban & Nilai</h2>
           </div>
 
-          <div className="border border-[#222224] rounded-xl overflow-hidden">
-            <table className="w-full text-left text-xs">
+          <div className="border border-[#222224] rounded-xl overflow-x-auto">
+            <table className="w-full text-left text-xs min-w-[500px]">
               <thead className="bg-[#0F0F11] text-[#71717A] font-bold border-b border-[#222224]">
                 <tr>
                   <th className="p-3">Mata Ujian</th>
@@ -303,7 +620,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onStartExam 
         <ul className="list-disc list-inside space-y-1.5 text-[#A1A1AA] text-[11px] leading-relaxed">
           <li>Pastikan perangkat HP/laptop Anda terhubung ke jaringan Wi-Fi CBT Madrasah yang sama dengan komputer server.</li>
           <li>Masukkan <strong className="text-white">Token Ujian</strong> yang diberikan oleh Bapak/Ibu Pengawas Ruang.</li>
-          <li>Jawaban Anda otomatis tersimpan (autosave) secara berkala setiap detik ke server lokal.</li>
+          <li>Jawaban Anda otomatis tersimpan (autosave) secara berkala setiap detik ke server lokal dan IndexedDB.</li>
           <li>Dilarang membuka tab baru, browser lain, atau aplikasi selain jendela ujian CBT.</li>
           <li>Jika terjadi kendala sinyal atau baterai HP habis, segera hubungi Proktor Ruang untuk melanjutkan ujian.</li>
         </ul>
@@ -368,3 +685,4 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onStartExam 
     </div>
   );
 };
+

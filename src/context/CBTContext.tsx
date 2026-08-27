@@ -40,6 +40,7 @@ import {
   initialRooms,
   initialSessionConfigs
 } from '../data/initialData';
+import { offlineSyncManager } from '../utils/offlineSyncManager';
 
 interface Toast {
   id: string;
@@ -136,6 +137,10 @@ interface CBTContextType {
   resetStudentSession: (sessionId: string) => void;
   addTimeSession: (sessionId: string, additionalMinutes: number) => void;
   gradeEssayAnswer: (resultId: string, questionId: string, score: number, feedback: string) => void;
+  syncOfflineQueue: (sessionId: string) => Promise<{ syncedCount: number }>;
+  syncAllOfflineQueues: () => Promise<{ totalSynced: number }>;
+  exportEmergencySessionBackup: (sessionId: string) => Promise<{ fileName: string; jsonData: string }>;
+  importEmergencySessionBackup: (jsonString: string) => { success: boolean; message: string; studentName?: string };
 
   // Results
   examResults: ExamResult[];
@@ -933,11 +938,30 @@ export const CBTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setExamSessions(prev => ({ ...prev, [sessionId]: newSession }));
     setActiveExamSessionId(sessionId);
+
+    // Asynchronously cache exam questions and snapshot into IndexedDB & localStorage
+    offlineSyncManager.cacheExamAndQuestions(exam, bankQuestions);
+    offlineSyncManager.saveSessionSnapshot({
+      sessionId,
+      examId: exam.id,
+      studentId: student.id,
+      studentName: student.nama,
+      nisn: student.nisn,
+      namaKelas: student.namaKelas,
+      answers: initialAnswers,
+      currentIndex: 0,
+      remainingSeconds: exam.durasiMenit * 60,
+      updatedAt: new Date().toISOString(),
+      status: 'sedang_mengerjakan'
+    });
+
     logActivity('START_EXAM_SESSION', `Siswa ${student.nama} memulai ujian ${exam.namaUjian}`);
     return { success: true, message: 'Selamat mengerjakan ujian!', session: newSession };
   };
 
   const saveStudentAnswer = (sessionId: string, questionId: string, value: any, isFlagged?: boolean) => {
+    let capturedUpdatedAnswer: StudentAnswer | null = null;
+
     setExamSessions(prev => {
       const session = prev[sessionId];
       if (!session) return prev;
@@ -966,6 +990,8 @@ export const CBTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         savedAt: new Date().toISOString().replace('T', ' ').substring(0, 19)
       };
 
+      capturedUpdatedAnswer = updatedAnswer;
+
       const updatedAnswers = {
         ...session.answers,
         [questionId]: updatedAnswer
@@ -983,6 +1009,144 @@ export const CBTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       };
     });
+
+    // Write to offline dual-layer (IndexedDB + localStorage) immediately
+    if (capturedUpdatedAnswer) {
+      offlineSyncManager.saveAnswerLocally(sessionId, questionId, capturedUpdatedAnswer);
+    }
+  };
+
+  const syncOfflineQueue = async (sessionId: string): Promise<{ syncedCount: number }> => {
+    try {
+      const pendingItems = await offlineSyncManager.getPendingQueue(sessionId);
+      if (pendingItems.length === 0) {
+        return { syncedCount: 0 };
+      }
+
+      const syncedIds: string[] = [];
+
+      setExamSessions(prev => {
+        const session = prev[sessionId];
+        if (!session) return prev;
+
+        const mergedAnswers = { ...session.answers };
+        pendingItems.forEach(item => {
+          mergedAnswers[item.questionId] = item.answer;
+          syncedIds.push(item.questionId);
+        });
+
+        const totalAnswered = (Object.values(mergedAnswers) as StudentAnswer[]).filter(a => a.isAnswered).length;
+
+        return {
+          ...prev,
+          [sessionId]: {
+            ...session,
+            answers: mergedAnswers,
+            totalAnswered,
+            lastHeartbeat: new Date().toISOString().replace('T', ' ').substring(0, 19)
+          }
+        };
+      });
+
+      await offlineSyncManager.markItemsAsSynced(sessionId, syncedIds);
+      logActivity('SYNC_OFFLINE_ANSWERS', `Sinkronisasi otomatis ${syncedIds.length} jawaban offline untuk sesi ${sessionId}`);
+      return { syncedCount: syncedIds.length };
+    } catch (e) {
+      console.warn('Error during syncOfflineQueue:', e);
+      return { syncedCount: 0 };
+    }
+  };
+
+  const syncAllOfflineQueues = async (): Promise<{ totalSynced: number }> => {
+    try {
+      const allQueues = await offlineSyncManager.getAllPendingQueues();
+      const sessionIds = Object.keys(allQueues);
+      if (sessionIds.length === 0) {
+        return { totalSynced: 0 };
+      }
+
+      let totalSynced = 0;
+      for (const sid of sessionIds) {
+        const res = await syncOfflineQueue(sid);
+        totalSynced += res.syncedCount;
+      }
+
+      if (totalSynced > 0) {
+        logActivity('AUTO_SYNC_ALL_OFFLINE', `Berhasil melakukan background sync ${totalSynced} jawaban tertunda dari seluruh sesi.`);
+      }
+
+      return { totalSynced };
+    } catch (e) {
+      console.warn('Error during syncAllOfflineQueues:', e);
+      return { totalSynced: 0 };
+    }
+  };
+
+  const exportEmergencySessionBackup = async (sessionId: string) => {
+    const session = examSessions[sessionId] || null;
+    return await offlineSyncManager.exportEmergencyBackup(sessionId, session);
+  };
+
+  const importEmergencySessionBackup = (jsonString: string): { success: boolean; message: string; studentName?: string } => {
+    try {
+      const payload = JSON.parse(jsonString);
+      if (!payload || typeof payload !== 'object' || !payload.sessionId || !payload.answers) {
+        return { success: false, message: 'Format berkas cadangan darurat tidak valid.' };
+      }
+
+      const sessionId: string = payload.sessionId;
+      const importedAnswers: { [qId: string]: StudentAnswer } = payload.answers;
+      const studentName: string = payload.studentName || 'Peserta';
+
+      setExamSessions(prev => {
+        const existingSession = prev[sessionId];
+        if (existingSession) {
+          const mergedAnswers = { ...existingSession.answers, ...importedAnswers };
+          const totalAnswered = (Object.values(mergedAnswers) as StudentAnswer[]).filter(a => a.isAnswered).length;
+          return {
+            ...prev,
+            [sessionId]: {
+              ...existingSession,
+              answers: mergedAnswers,
+              totalAnswered,
+              lastHeartbeat: new Date().toISOString().replace('T', ' ').substring(0, 19)
+            }
+          };
+        } else {
+          // Construct recovered session
+          const recoveredSession: ExamSession = {
+            id: sessionId,
+            examId: payload.examId || '',
+            studentId: payload.studentId || '',
+            studentName: payload.studentName || 'Siswa',
+            nisn: payload.nisn || '',
+            namaKelas: payload.namaKelas || '',
+            roomName: 'LAB-RECOVERY',
+            tokenUsed: payload.tokenUsed || '',
+            status: 'sedang_mengerjakan',
+            startedAt: payload.exportedAt || new Date().toISOString().replace('T', ' ').substring(0, 19),
+            lastHeartbeat: new Date().toISOString().replace('T', ' ').substring(0, 19),
+            ipAddress: '127.0.0.1',
+            deviceInfo: 'Imported Backup',
+            remainingSeconds: 0,
+            answers: importedAnswers,
+            questionOrder: Object.keys(importedAnswers),
+            totalAnswered: Object.values(importedAnswers).filter(a => a.isAnswered).length,
+            totalQuestions: payload.totalQuestions || Object.keys(importedAnswers).length
+          };
+          return {
+            ...prev,
+            [sessionId]: recoveredSession
+          };
+        }
+      });
+
+      logActivity('IMPORT_EMERGENCY_BACKUP', `Proktor memulihkan jawaban darurat untuk siswa ${studentName} (${Object.keys(importedAnswers).length} jawaban)`);
+      showToast(`Berhasil memulihkan ${Object.keys(importedAnswers).length} jawaban darurat siswa: ${studentName}!`, 'success');
+      return { success: true, message: 'Cadangan jawaban darurat berhasil diimpor.', studentName };
+    } catch (err: any) {
+      return { success: false, message: 'Gagal membaca berkas: ' + (err.message || 'Format JSON rusak') };
+    }
   };
 
   const toggleFlagAnswer = (sessionId: string, questionId: string) => {
@@ -1406,6 +1570,10 @@ export const CBTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         resetStudentSession,
         addTimeSession,
         gradeEssayAnswer,
+        syncOfflineQueue,
+        syncAllOfflineQueues,
+        exportEmergencySessionBackup,
+        importEmergencySessionBackup,
         examResults,
         deleteResult,
         activityLogs,

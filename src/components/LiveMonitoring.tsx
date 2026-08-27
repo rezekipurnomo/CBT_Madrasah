@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useCBT } from '../context/CBTContext';
 import { ExamSession, StudentAnswer, SessionStatus } from '../types';
 import {
@@ -15,7 +15,10 @@ import {
   XCircle,
   Laptop,
   Eye,
-  Send
+  Send,
+  Upload,
+  ShieldCheck,
+  HardDrive
 } from 'lucide-react';
 
 export const LiveMonitoring: React.FC = () => {
@@ -26,6 +29,7 @@ export const LiveMonitoring: React.FC = () => {
     resetStudentSession,
     addTimeSession,
     finishExamSession,
+    importEmergencySessionBackup,
     showToast
   } = useCBT();
 
@@ -35,6 +39,28 @@ export const LiveMonitoring: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedSessionForView, setSelectedSessionForView] = useState<ExamSession | null>(null);
   const [isAutoRefresh, setIsAutoRefresh] = useState<boolean>(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportEmergencyFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = event => {
+      const content = event.target?.result as string;
+      if (content) {
+        const result = importEmergencySessionBackup(content);
+        if (result.success) {
+          showToast(`Berhasil memulihkan berkas jawaban darurat siswa: ${result.studentName || 'Peserta'}`, 'success');
+        } else {
+          showToast(`Gagal memulihkan berkas: ${result.message}`, 'error');
+        }
+      }
+    };
+    reader.readAsText(file);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   // Auto-refresh pulse
   const [ticker, setTicker] = useState<number>(0);
@@ -135,19 +161,36 @@ export const LiveMonitoring: React.FC = () => {
           </div>
         </div>
 
-        {/* Live Stats Badges */}
-        <div className="flex items-center space-x-3">
-          <div className="px-4 py-2 bg-[#121214] border border-[#222224] rounded-xl text-center min-w-[100px]">
+        {/* Live Stats Badges & Actions */}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Emergency Backup File Upload for Proctor */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleImportEmergencyFile}
+            accept=".cbt,.json"
+            className="hidden"
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-[#1C1C1F] hover:bg-[#252529] text-emerald-400 border border-emerald-500/40 text-xs font-bold transition-all shadow-xs active:scale-95"
+            title="Impor berkas cadangan jawaban darurat dari HP/Laptop siswa jika jaringan lab terputus"
+          >
+            <Upload className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Impor Jawaban Darurat (.cbt)</span>
+          </button>
+
+          <div className="px-4 py-2 bg-[#121214] border border-[#222224] rounded-xl text-center min-w-[90px]">
             <div className="text-lg font-extrabold text-emerald-400 font-mono">{activeCount}</div>
-            <div className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide">Aktif Pengerjaan</div>
+            <div className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide">Aktif</div>
           </div>
-          <div className="px-4 py-2 bg-[#121214] border border-[#222224] rounded-xl text-center min-w-[100px]">
+          <div className="px-4 py-2 bg-[#121214] border border-[#222224] rounded-xl text-center min-w-[90px]">
             <div className="text-lg font-extrabold text-blue-400 font-mono">{completedCount}</div>
-            <div className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide">Selesai Submit</div>
+            <div className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide">Selesai</div>
           </div>
-          <div className="px-4 py-2 bg-[#121214] border border-[#222224] rounded-xl text-center min-w-[100px]">
+          <div className="px-4 py-2 bg-[#121214] border border-[#222224] rounded-xl text-center min-w-[90px]">
             <div className="text-lg font-extrabold text-white font-mono">{totalCount}</div>
-            <div className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide">Total Terdaftar</div>
+            <div className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide">Total</div>
           </div>
         </div>
       </div>

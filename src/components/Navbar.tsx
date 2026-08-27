@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useCBT } from '../context/CBTContext';
 import { UserRole } from '../types';
+import { offlineSyncManager } from '../utils/offlineSyncManager';
 import {
   School,
   Clock,
   Wifi,
+  WifiOff,
   Server,
   User,
   LogOut,
@@ -14,7 +16,10 @@ import {
   GraduationCap,
   Sparkles,
   Menu,
-  X
+  X,
+  Database,
+  CheckCircle2,
+  RefreshCw
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -29,11 +34,79 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, isSidebarOpen }
     serverTime,
     switchDemoRole,
     logout,
-    systemHealth
+    systemHealth,
+    syncAllOfflineQueues,
+    showToast
   } = useCBT();
 
   const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [showNetworkInfo, setShowNetworkInfo] = useState<boolean>(false);
+  const [totalPendingCount, setTotalPendingCount] = useState<number>(0);
+  const [isSyncingGlobal, setIsSyncingGlobal] = useState<boolean>(false);
+
+  // Check pending offline queues across all sessions
+  const refreshPendingCount = useCallback(async () => {
+    try {
+      const allQueues = await offlineSyncManager.getAllPendingQueues();
+      let count = 0;
+      Object.values(allQueues).forEach(items => {
+        count += items.length;
+      });
+      setTotalPendingCount(count);
+    } catch {
+      // Ignored
+    }
+  }, []);
+
+  // Perform background sync push
+  const handleGlobalPush = useCallback(async () => {
+    if (isSyncingGlobal) return;
+    setIsSyncingGlobal(true);
+    try {
+      const res = await syncAllOfflineQueues();
+      if (res.totalSynced > 0) {
+        showToast(`Auto-Sync: Berhasil mengirim ${res.totalSynced} jawaban tersimpan ke server!`, 'success');
+      }
+      await refreshPendingCount();
+    } catch (e) {
+      console.warn('Background sync failed:', e);
+    } finally {
+      setIsSyncingGlobal(false);
+    }
+  }, [isSyncingGlobal, syncAllOfflineQueues, showToast, refreshPendingCount]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      // Immediately push pending offline submissions to the server
+      handleGlobalPush();
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Initial check
+    refreshPendingCount();
+
+    // Periodic check and push every 10 seconds if online
+    const interval = setInterval(() => {
+      refreshPendingCount();
+      if (navigator.onLine) {
+        handleGlobalPush();
+      }
+    }, 10000);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      clearInterval(interval);
+    };
+  }, [handleGlobalPush, refreshPendingCount]);
 
   const formattedTime = serverTime.toLocaleTimeString('id-ID', {
     hour: '2-digit',
@@ -97,18 +170,113 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, isSidebarOpen }
             </div>
           </div>
 
-          {/* Center: Server Info & Time */}
+          {/* Center: Server Info, Network Status & Time */}
           <div className="hidden md:flex items-center space-x-3 bg-[#161618] px-3.5 py-1.5 rounded-xl border border-[#222224] shadow-sm text-xs">
             <div className="flex items-center space-x-1.5 text-[#A1A1AA]">
               <Server className="w-3.5 h-3.5 text-emerald-400" />
               <span className="font-mono font-medium text-[#D1D1D1]">{madrasah.serverIp}:{madrasah.serverPort}</span>
             </div>
+            
             <div className="h-3 w-px bg-[#2D2D31]" />
-            <div className="flex items-center space-x-1.5 text-emerald-400">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" />
-              <span className="font-medium text-[11px] text-[#A1A1AA]">LAN Lokal</span>
+            
+            {/* Subtle Network & IndexedDB Status Indicator */}
+            <div className="relative">
+              <button
+                onClick={() => setShowNetworkInfo(!showNetworkInfo)}
+                className={`flex items-center space-x-1.5 px-2 py-0.5 rounded-md border transition-all ${
+                  isOnline
+                    ? totalPendingCount > 0
+                      ? 'bg-amber-950/40 text-amber-300 border-amber-800/40 hover:bg-amber-900/40'
+                      : 'bg-emerald-950/40 text-emerald-400 border-emerald-800/40 hover:bg-emerald-900/40'
+                    : 'bg-amber-950/50 text-amber-300 border-amber-800/60 hover:bg-amber-900/50 animate-pulse'
+                }`}
+                title="Status Jaringan & Sinkronisasi IndexedDB"
+              >
+                {isSyncingGlobal ? (
+                  <>
+                    <RefreshCw className="w-3 h-3 text-emerald-400 animate-spin" />
+                    <span className="font-medium text-[11px] text-emerald-400">Sinkronisasi...</span>
+                  </>
+                ) : isOnline ? (
+                  totalPendingCount > 0 ? (
+                    <>
+                      <Wifi className="w-3 h-3 text-amber-400" />
+                      <span className="font-medium text-[11px] text-amber-300">
+                        {totalPendingCount} Tertunda (Auto-Sync)
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <Wifi className="w-3 h-3 text-emerald-400" />
+                      <span className="font-medium text-[11px]">LAN Online</span>
+                    </>
+                  )
+                ) : (
+                  <>
+                    <WifiOff className="w-3 h-3 text-amber-300" />
+                    <span className="font-semibold text-[11px]">
+                      Offline {totalPendingCount > 0 ? `(${totalPendingCount} di Cache)` : '(IndexedDB)'}
+                    </span>
+                  </>
+                )}
+              </button>
+
+              {showNetworkInfo && (
+                <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 w-80 bg-[#161618] rounded-xl shadow-2xl border border-[#2D2D31] p-3.5 z-50 text-[#D1D1D1] animate-in fade-in zoom-in-95 duration-100">
+                  <div className="flex items-center justify-between pb-2 border-b border-[#222224] mb-2.5">
+                    <div className="flex items-center space-x-1.5 font-bold text-xs text-white">
+                      <Database className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Status Sinkronisasi & Jaringan</span>
+                    </div>
+                    <button
+                      onClick={() => setShowNetworkInfo(false)}
+                      className="text-[#71717A] hover:text-white text-xs"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-2 text-[11px] leading-relaxed">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[#71717A]">Koneksi Server:</span>
+                      <span className={`font-semibold ${isOnline ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {isOnline ? 'Terhubung (LAN Online)' : 'Terputus (Mode Offline)'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[#71717A]">Penyimpanan Lokal:</span>
+                      <span className="text-emerald-400 font-mono font-semibold">IndexedDB + localStorage</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[#71717A]">Antrean Tertunda:</span>
+                      <span className={`font-mono font-bold ${totalPendingCount > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                        {totalPendingCount} Jawaban Soal
+                      </span>
+                    </div>
+                    
+                    <div className="p-2 bg-[#121214] border border-[#222224] rounded-lg text-[10px] text-[#A1A1AA] leading-normal">
+                      {isOnline
+                        ? 'Sistem terhubung ke server utama. Jawaban soal offline yang tersimpan di IndexedDB secara otomatis langsung dikirim ke server.'
+                        : 'Jaringan Wi-Fi lab sedang tidak stabil. Jawaban pengerjaan soal tetap aman di IndexedDB perangkat dan akan dikirim otomatis begitu koneksi aktif terdeteksi.'}
+                    </div>
+
+                    {isOnline && totalPendingCount > 0 && (
+                      <button
+                        onClick={handleGlobalPush}
+                        disabled={isSyncingGlobal}
+                        className="w-full flex items-center justify-center space-x-1.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold text-[11px] transition-all"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isSyncingGlobal ? 'animate-spin' : ''}`} />
+                        <span>Kirim {totalPendingCount} Jawaban Sekarang</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
+
             <div className="h-3 w-px bg-[#2D2D31]" />
+
             <div className="flex items-center space-x-1.5 text-amber-400 font-mono">
               <Clock className="w-3.5 h-3.5 text-amber-400" />
               <span className="font-bold text-[#E5E5E7]">{formattedTime}</span>
@@ -116,8 +284,22 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, isSidebarOpen }
             </div>
           </div>
 
-          {/* Right: Quick Role Switcher (for testing/demo) & User Profile */}
+          {/* Right: Quick Role Switcher (for testing/demo), Mobile Network Pill & User Profile */}
           <div className="flex items-center space-x-2 sm:space-x-3">
+            {/* Mobile Network Indicator (Visible only on small screens) */}
+            <div className="md:hidden">
+              <button
+                onClick={() => setShowNetworkInfo(!showNetworkInfo)}
+                className={`p-1.5 rounded-lg border transition-all ${
+                  isOnline
+                    ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800/40'
+                    : 'bg-amber-950/50 text-amber-300 border-amber-800/60'
+                }`}
+                title={isOnline ? 'Online (LAN)' : 'Offline (IndexedDB)'}
+              >
+                {isOnline ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5 text-amber-400 animate-pulse" />}
+              </button>
+            </div>
             {/* Quick Role Switcher Pill */}
             <div className="relative">
               <button
